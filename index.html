@@ -101,6 +101,15 @@ button,input{font-family:var(--font)}
 table.r{border-collapse:collapse;table-layout:fixed;font-size:12px;font-weight:300;font-variant-numeric:tabular-nums;color:var(--fg)}
 table.r th,table.r td{padding:3px 8px;white-space:nowrap;text-align:center}
 table.r .lab{text-align:left;overflow:hidden;text-overflow:ellipsis}
+/* en las filas Total Cartera, las celdas vacías van sin color (los subtotales grises se mantienen completos) */
+table.r tr.big td:empty{background:transparent}
+.nota-pie{font-size:11px;color:var(--muted);margin-top:12px}
+/* Money market agrupado: fila resumen con botón y detalle desplegable con sangría */
+.mm-toggle{appearance:none;border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
+.mm-toggle:hover{color:var(--mfo-blue-mid)}
+.mm-toggle .mm-n{color:var(--muted)}
+table.r tr.mm-det td.lab{padding-left:20px}
+table.r .gl{border-left:4px solid var(--surface) !important}
 table.r tbody td:not(.lab){padding-left:5px;padding-right:5px}
 table.r.angosta tbody td:not(.lab){padding-left:3px;padding-right:3px}
 table.r.angosta thead tr:not(.g) th{padding-left:3px;padding-right:3px}
@@ -150,7 +159,7 @@ table.r td.lim.alloc.vacio,table.r tr.sub td.lim.alloc,table.r tr.big td.lim.all
     <div class="slots">
       <div class="slot" id="slot-aa">
         <div class="item">
-          <div class="item-header"><span class="item-title">1. Asset Allocation</span><span class="item-date">Descarga AA</span></div>
+          <div class="item-header"><span class="item-title">Allocation</span><span class="item-date">Descarga Asset Allocation</span></div>
           <div class="item-body">
             <p class="desc">Detalle de posiciones en CLP y USD.</p>
             <div class="pick">
@@ -301,6 +310,7 @@ function el(tag, attrs, text) { const e = document.createElement(tag); for (cons
 let cliente = null;
 function abrirMenu(si) { $('sel-menu').hidden = !si; $('sel-btn').setAttribute('aria-expanded', String(si)); }
 let verOpcional = false;
+const mmAbierto = new Set(); // grupos de money market desplegados (se mantienen al cambiar de cliente o de vista)
 function elegirCliente(k) {
   cliente = CLIENTES[k] ? k : null;
   verOpcional = false;
@@ -339,6 +349,7 @@ function construir(v, c) {
   prod.appendChild(tablaProductos(c, porAlias, true));
   prod.appendChild(el('div', { style: 'height:22px' }));
   prod.appendChild(tablaProductos(c, porAlias, false));
+  prod.appendChild(el('p', { class: 'nota-pie' }, 'No se muestran instrumentos con valor menor a USD 20.'));
   v.appendChild(tarjeta('Detalle por Productos', prod));
   return c.alias.length;
 }
@@ -355,7 +366,9 @@ function anchosGlobales() {
     for (const conOpc of c0.opcional ? [false, true] : [false]) {
       const c = { ...c0, alias: c0.alias.filter((a) => conOpc || !(c0.opcional || []).includes(a)) };
       tmp.replaceChildren();
-      const m = medirAnchos(tmp, construir(tmp, c));
+      const nn = construir(tmp, c);
+      tmp.querySelectorAll('tr.mm-det').forEach((r) => { r.hidden = false; }); // se mide también el detalle de money market
+      const m = medirAnchos(tmp, nn);
       g = !g ? m : { lab: Math.max(g.lab, m.lab), labProd: Math.max(g.labProd, m.labProd), pc: Math.max(g.pc, m.pc), am: g.am.map((x, i) => Math.max(x, m.am[i] || 0)) };
     }
   }
@@ -378,7 +391,7 @@ function medirAnchos(v, n) {
       const cs = tr.children;
       if (cs.length < 1 + 2 * n) continue;
       // la columna de nombres se mide con las tablas de resumen; en las de productos, un nombre más largo pasa a 2 líneas
-      if (t.querySelectorAll('col').length > 1 + 2 * n) lab = Math.max(lab, ancho(cs[0])); else labProd = Math.max(labProd, ancho(cs[0]));
+      if (t.querySelectorAll('col').length > 1 + 2 * n) lab = Math.max(lab, ancho(cs[0])); else labProd = Math.max(labProd, ancho(cs[0]) + (tr.classList.contains('mm-det') ? 12 : 0));
       for (let i = 1; i <= n; i++) amT = Math.max(amT, ancho(cs[i]));
       for (let i = n + 1; i <= 2 * n; i++) pc = Math.max(pc, ancho(cs[i]));
     }
@@ -396,14 +409,23 @@ function aplicarAnchos(v, n, m) {
   const wLab = Math.ceil(Math.max(m.lab + 18, Math.min(m.labProd + 18, m.lab + 40))), wPc = Math.ceil(m.pc + 14), wLim = 80;
   tablas.forEach((t, k) => {
     // tablas con montos largos (CLP): margen más ajustado para que las columnas no queden tan anchas
-    const amT = m.am[k] || 0, largo = amT > 75;
+    // todas las tablas con el mismo ancho de MONTO: el que necesita la tabla más exigente (clase de activo, en CLP) más un poco de aire
+    const amT = Math.max(...m.am), largo = true;
     t.classList.toggle('angosta', largo);
-    const wAm = Math.ceil(amT + (largo ? 9 : 14));
+    const wAm = Math.ceil(amT + 13);
     const cols = t.querySelectorAll('col');
     const ws = [wLab].concat(Array(n).fill(wAm), Array(n).fill(wPc), cols.length > 1 + 2 * n ? [wLim] : []);
     ws.forEach((w, i) => { if (cols[i]) cols[i].style.width = w + 'px'; });
     const tot = ws.reduce((x, y) => x + y, 0);
     t.style.width = tot + 'px'; t.style.minWidth = tot + 'px';
+    // separación leve en blanco entre nombres | montos | % | límite/allocation
+    const conLim = cols.length > 1 + 2 * n;
+    t.querySelectorAll('tbody tr').forEach((tr) => {
+      const cs = tr.children; if (cs.length < 1 + 2 * n) return;
+      cs[1].classList.add('gl'); cs[n + 1].classList.add('gl'); if (conLim && cs[2 * n + 1]) cs[2 * n + 1].classList.add('gl');
+    });
+    const g = t.querySelector('thead tr.g'); if (g) [...g.children].slice(1).forEach((th) => th.classList.add('gl'));
+    const al = t.querySelectorAll('thead tr:not(.g) th'); if (al[0]) al[0].classList.add('gl'); if (al[n]) al[n].classList.add('gl');
   });
 }
 function tarjeta(titulo, contenido) {
@@ -428,7 +450,7 @@ function tablaResumen(c, porAlias) {
   const th = el('thead');
   const g = el('tr', { class: 'g' });
   const lim = el('th', { class: 'lim', rowspan: '2' }); lim.append('Límite'); lim.appendChild(el('br')); lim.append('neutral');
-  g.append(el('th', { class: 'lab', rowspan: '2' }, 'Resumen Cartera'), el('th', { colspan: String(n) }, 'Monto USD'), el('th', { class: 'pc', colspan: String(n) }, '% Cartera'), lim);
+  g.append(el('th', { class: 'lab', rowspan: '2' }, 'Resumen Cartera'), (() => { const x = el('th', { colspan: String(n) }); x.innerHTML = 'Monto (<span style="text-transform:none">en</span> USD)'; return x; })(), el('th', { class: 'pc', colspan: String(n) }, '% Cartera'), lim);
   const h = el('tr');
   const nombre = (a, cls) => { const x = el('th', { class: cls }); const i = a.indexOf('-'); if (i > 0) { x.append(a.slice(0, i + 1)); x.appendChild(el('br')); x.append(a.slice(i + 1)); } else x.textContent = a; return x; };
   c.alias.forEach((a) => h.appendChild(nombre(a, '')));
@@ -568,7 +590,7 @@ function tablaProductos(c, porAlias, nacional) {
   base.forEach((w) => cg.appendChild(el('col', { style: 'width:' + (100 * w / suma).toFixed(3) + '%' })));
   t.appendChild(cg); t.style.width = (100 * suma / conLim).toFixed(3) + '%'; t.style.minWidth = suma + 'px';
   const th = el('thead'); const g = el('tr', { class: 'g' });
-  g.append(el('th', { class: 'lab', rowspan: '2' }, nacional ? 'Cartera Nacional' : 'Cartera Internacional'), el('th', { colspan: String(n) }, 'Monto ' + (nacional ? 'CLP' : 'USD')), el('th', { class: 'pc', colspan: String(n) }, '% Cartera'));
+  g.append(el('th', { class: 'lab', rowspan: '2' }, nacional ? 'Cartera Nacional' : 'Cartera Internacional'), (() => { const x = el('th', { colspan: String(n) }); x.innerHTML = 'Monto (<span style="text-transform:none">en</span> ' + (nacional ? 'CLP' : 'USD') + ')'; return x; })(), el('th', { class: 'pc', colspan: String(n) }, '% Cartera'));
   const h = el('tr');
   const nombre = (a, cls) => { const x = el('th', { class: cls }); const i = a.indexOf('-'); if (i > 0) { x.append(a.slice(0, i + 1)); x.appendChild(el('br')); x.append(a.slice(i + 1)); } else x.textContent = a; return x; };
   c.alias.forEach((a) => h.appendChild(nombre(a, '')));
@@ -577,9 +599,12 @@ function tablaProductos(c, porAlias, nacional) {
   const tb = el('tbody');
   const gap = () => { const tr = el('tr', { class: 'gap' }); tr.appendChild(el('td', { colspan: String(2 * n + 1) })); tb.appendChild(tr); };
   gap();
+  let hubo = false;
   clases.forEach((cl, ci) => {
     const todos = porAlias.flat().filter((r) => r.clase === cl);
     if (!todos.length) return;
+    if (hubo) gap(); // espacio entre clases, como en Resumen por Clase de Activo
+    hubo = true;
     const og = ORDEN[cl] || [];
     const pos = (gr) => { const i = og.indexOf(gr); return i < 0 ? 99 : i; };
     const usdDe = (nm) => todos.filter((r) => r.instrumento === nm).reduce((s2, r) => s2 + r.usd, 0);
@@ -593,21 +618,64 @@ function tablaProductos(c, porAlias, nacional) {
     const accionDe = (nm) => (cl === 'RVI' && todos.some((r) => r.instrumento === nm && r.accion) ? 1 : 0);
     const nombres = [...new Set(todos.map((r) => r.instrumento))]
       .sort((a, b) => accionDe(a) - accionDe(b) || (accionDe(a) && usdDe(b) - usdDe(a)) || cajaDe(a) - cajaDe(b) || mmNac(a) - mmNac(b) || pos(grupoDe(a)) - pos(grupoDe(b)) || grupoDe(a).localeCompare(grupoDe(b)) || rango(a) - rango(b) || usdDe(b) - usdDe(a));
-    let primera = true;
+    // Money market (caja, depósitos y fondos de liquidez): si hay más de 2 productos, van agrupados en una fila
+    // "Money Market" con su total, y se pueden desplegar para ver el detalle
+    const montoNm = (nm) => porAlias.map((rs) => rs.filter((r) => r.clase === cl && r.instrumento === nm).reduce((s2, r) => s2 + r[campo], 0));
+    const esMM = (nm) => (cl === 'RFI' && grupoDe(nm) === 'Caja y Money Market') || (cl === 'RFN' && (cajaDe(nm) === 0 || mmNac(nm) === 0));
+    // no se muestran instrumentos con valor menor a USD 20 en todos los alias (p. ej. bonos en default con valor residual)
+    const usdNm = (nm) => porAlias.map((rs) => rs.filter((r) => r.clase === cl && r.instrumento === nm).reduce((s2, r) => s2 + r.usd, 0));
+    const visible = (nm) => usdNm(nm).some((x) => Math.abs(x) >= 20);
+    const mmNombres = nombres.filter((nm) => esMM(nm) && visible(nm));
+    const agrupar = mmNombres.length > 2;
+    const claveMM = cliente + '|' + cl;
+    let filaMM = null;
     for (const nm of nombres) {
-      const m = porAlias.map((rs) => rs.filter((r) => r.clase === cl && r.instrumento === nm).reduce((s2, r) => s2 + r[campo], 0));
-      if (m.every((x) => Math.round(x) === 0)) continue;
+      const m = montoNm(nm);
+      if (!visible(nm)) continue;
       const u = porAlias.map((rs) => rs.filter((r) => r.clase === cl && r.instrumento === nm).reduce((s2, r) => s2 + r.usd, 0));
-      const tr = el('tr', { class: primera && ci > 0 && tb.querySelectorAll('tr:not(.gap)').length ? 'sep' : '' });
-      primera = false;
+      if (agrupar && esMM(nm) && !filaMM) {
+        // fila resumen del grupo, con botón para desplegar
+        filaMM = el('tr', { class: 'mm-grupo' });
+        const abierto = mmAbierto.has(claveMM);
+        const lab = el('td', { class: 'lab' });
+        const bt = el('button', { type: 'button', class: 'mm-toggle', 'aria-expanded': String(abierto), title: abierto ? 'Agrupar' : 'Ver detalle' }, 'Money Market');
+        bt.addEventListener('click', () => {
+          const ab = !mmAbierto.has(claveMM);
+          if (ab) mmAbierto.add(claveMM); else mmAbierto.delete(claveMM);
+          tb.querySelectorAll('tr.mm-det[data-mm="' + cl + '"]').forEach((r) => { r.hidden = !ab; });
+          bt.setAttribute('aria-expanded', String(ab)); bt.title = ab ? 'Agrupar' : 'Ver detalle';
+        });
+        lab.appendChild(bt); filaMM.appendChild(lab);
+        const rsMM = porAlias.map((rs) => rs.filter((r) => r.clase === cl && mmNombres.includes(r.instrumento)));
+        const mt = rsMM.map((rs) => rs.reduce((s2, r) => s2 + r[campo], 0)), ut = rsMM.map((rs) => rs.reduce((s2, r) => s2 + r.usd, 0));
+        mt.forEach((x) => filaMM.appendChild(el('td', {}, money(x))));
+        ut.forEach((x, i) => filaMM.appendChild(el('td', {}, Math.round(mt[i]) ? pct(totUsd[i] ? x / totUsd[i] : 0) : '')));
+        tb.appendChild(filaMM);
+      }
+      const tr = el('tr');
+      if (agrupar && esMM(nm)) { tr.className = 'mm-det'; tr.dataset.mm = cl; tr.hidden = !mmAbierto.has(claveMM); }
       tr.appendChild(el('td', { class: 'lab', title: nm }, nm.replace(/\(UNICA\)/g, '(Unica)'))); // serie única en minúsculas para que el nombre quepa
       m.forEach((x) => tr.appendChild(el('td', {}, money(x))));
       u.forEach((x, i) => tr.appendChild(el('td', {}, Math.round(m[i]) ? pct(totUsd[i] ? x / totUsd[i] : 0) : '')));
       tb.appendChild(tr);
     }
+    // subtotal de la clase (monto en su moneda y % sobre la cartera total del alias)
+    filaTotal(TOTALES[cl], porAlias.map((rs) => rs.filter((r) => r.clase === cl)), 'sub');
   });
+  // total de la cartera nacional / internacional
+  gap();
+  filaTotal(nacional ? 'Total Cartera Nacional (en CLP)' : 'Total Cartera Internacional (en USD)', porAlias.map((rs) => rs.filter((r) => clases.includes(r.clase))), 'big');
   t.appendChild(tb);
   return t;
+  function filaTotal(etq, rsAlias, cls) {
+    const tr = el('tr', { class: cls });
+    tr.appendChild(el('td', { class: 'lab' }, etq));
+    const m = rsAlias.map((rs) => rs.reduce((s2, r) => s2 + r[campo], 0));
+    const u = rsAlias.map((rs) => rs.reduce((s2, r) => s2 + r.usd, 0));
+    m.forEach((x) => tr.appendChild(el('td', {}, money(x))));
+    u.forEach((x, i) => tr.appendChild(el('td', {}, Math.round(m[i]) ? pct(totUsd[i] ? x / totUsd[i] : 0) : '')));
+    tb.appendChild(tr);
+  }
 }
 
 $('opc-btn').addEventListener('click', () => { verOpcional = !verOpcional; vistaCliente(); });
