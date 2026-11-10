@@ -106,6 +106,11 @@ table.r th,table.r td{padding:3px 8px;white-space:nowrap;text-align:center}
 table.r .lab{text-align:left;overflow:hidden;text-overflow:ellipsis}
 /* en las filas Total Cartera, las celdas vacías van sin color (los subtotales grises se mantienen completos) */
 table.r tr.big td:empty{background:transparent}
+.cu-btn{margin-bottom:12px}
+table.r thead th.cu-h{background:#969696}
+table.r td.cu-nom,table.r td.cu-mon{text-align:center;padding-left:2px !important;padding-right:2px !important}
+table.r thead th.cu-nom,table.r thead th.cu-mon{padding-left:0;padding-right:0;text-align:center}
+table.r tr.sub td.cu,table.r tr.big td.cu,table.r tr.mm-grupo td.cu{background:transparent}
 .nota-pie{font-size:11px;color:var(--muted);margin-top:12px}
 /* Money market agrupado: fila resumen con botón y detalle desplegable con sangría */
 .mm-toggle{appearance:none;border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
@@ -245,10 +250,12 @@ function leerAA(wb) {
     const falta = COLS.filter((c) => !cab.includes(c));
     if (falta.length) throw new Error('faltan columnas: ' + falta.join(', '));
     const ix = Object.fromEntries(COLS.map((c) => [c, cab.indexOf(c)]));
+    const ixCust = cab.indexOf('Manager'); // custodio (opcional)
     const pos = [];
     for (const f of filas.slice(hi + 1)) {
       if (!f || !f[ix['Alias']]) continue;
       const o = {}; for (const c of COLS) o[c] = f[ix[c]];
+      o['Manager'] = ixCust >= 0 ? f[ixCust] : '';
       pos.push(o);
     }
     if (!pos.length) throw new Error('la hoja no tiene posiciones');
@@ -333,7 +340,7 @@ function clasificar(p) {
   else if (clase === 'RFI') grupo = (ca === 'CASHI' || ['Money Market', 'Otros', 'Depósitos', ''].includes(sub)) ? 'Caja y Money Market' : sub === 'Emerging Market Debt' ? 'Emerging Market Debt' : sub;
   else if (clase === 'RVI') grupo = { 'Norteamérica': 'Estados Unidos', 'Europa': 'Europa', 'Japón': 'Japón', 'Asia': 'Japón', 'Global Emergente': 'Global Emergente', 'Asia Emergente': 'Global Emergente', 'Latinoamérica': 'Global Emergente', 'Europa Emergente': 'Global Emergente', 'Global': 'Global' }[p['Región']] || 'Global';
   else grupo = sub || 'Otros';
-  return { clase, macro: clase.slice(0, -1), mercado: clase.endsWith('N') ? 'CLP' : 'USD', grupo, caja: ca === 'CASHI' || ca === 'CASHN', accion: p['Tipo Instrumento'] === 'Acciones', mm: /Money Market/i.test(sub) || /Money Market|Liquidez/i.test(String(p['Nombre'] || '')), instrumento: p['Nombre'], usd: Number(p['Valor en USD']) || 0, clp: Number(p['Valor en CLP']) || 0 };
+  return { clase, macro: clase.slice(0, -1), mercado: clase.endsWith('N') ? 'CLP' : 'USD', grupo, caja: ca === 'CASHI' || ca === 'CASHN', accion: p['Tipo Instrumento'] === 'Acciones', custodio: String(p['Manager'] || '').trim(), mm: /Money Market/i.test(sub) || /Money Market|Liquidez/i.test(String(p['Nombre'] || '')), instrumento: p['Nombre'], usd: Number(p['Valor en USD']) || 0, clp: Number(p['Valor en CLP']) || 0 };
 }
 const pct = (v) => { if (v == null || !isFinite(v)) return ''; let x = v * 100; if (Math.abs(x) < 0.05) x = 0; return x.toFixed(1).replace('.', ',').replace('-', '\u2212') + '%'; };
 const money = (v) => (v == null || !isFinite(v) || Math.round(v) === 0 ? '' : nf.format(Math.round(v)));
@@ -341,6 +348,58 @@ function el(tag, attrs, text) { const e = document.createElement(tag); for (cons
 let cliente = null;
 function abrirMenu(si) { $('sel-menu').hidden = !si; $('sel-btn').setAttribute('aria-expanded', String(si)); }
 let verOpcional = false;
+let verCustodio = false; // columnas de custodio en Detalle por Productos (ocultas al abrir)
+const sinCu = (tr) => [...tr.children].filter((td) => !td.classList.contains('cu'));
+// Agrega, después de la columna de nombres, pares Nombre / $ por custodio de cada producto (suma de los alias visibles,
+// en la moneda de la tabla). Si un producto está en más de un custodio, los pares se repiten hacia la derecha.
+// Nombre corto del custodio: sin "CdB"; BTG Pactual → BTG, Julius Baer → JB, Morgan Stanley → MS
+const custodioCorto = (x) => {
+  const s = String(x || '').replace(/\bCdB\b\.?/gi, '').replace(/\s+/g, ' ').trim();
+  if (/^BTG/i.test(s)) return 'BTG';
+  if (/^Julius\s+Baer/i.test(s)) return 'JB';
+  if (/^Morgan\s+Stanley/i.test(s)) return 'MS';
+  return s || 'Sin custodio';
+};
+// custodios con monto de cada producto visible de la tabla (suma de los alias visibles)
+function custodiosDe(porAlias, campo) {
+  const porNm = new Map();
+  for (const rs of porAlias) for (const r of rs) {
+    const k = r.clase + '|' + r.instrumento;
+    if (!porNm.has(k)) porNm.set(k, new Map());
+    const m = porNm.get(k); const cu = custodioCorto(r.custodio);
+    const x = m.get(cu) || { v: 0, usd: 0 }; x.v += r[campo]; x.usd += r.usd; m.set(cu, x);
+  }
+  // como en el resto del panel, no se muestran montos menores a USD 20 (saldos residuales en otro custodio)
+  return (tr) => { const m = porNm.get(tr.dataset.cl + '|' + tr.dataset.nm); const l = m ? [...m.entries()].filter(([, x]) => Math.abs(x.usd) >= 20).map(([k, x]) => [k, x.v]).sort((a, b) => b[1] - a[1]) : []; return tr.dataset.cu ? l.filter(([k]) => k === tr.dataset.cu) : l; };
+}
+function paresCustodio(t, porAlias, campo) {
+  const lista = custodiosDe(porAlias, campo);
+  return Math.max(1, ...[...t.querySelectorAll('tbody tr')].filter((tr) => tr.dataset.nm).map((tr) => lista(tr).length));
+}
+function agregarCustodio(t, porAlias, campo, maxCu) {
+  const lista = custodiosDe(porAlias, campo);
+  const filas = [...t.querySelectorAll('tbody tr')];
+  // columnas
+  const primera = t.querySelector('col');
+  for (let i = 2 * maxCu - 1; i >= 0; i--) primera.after(el('col', { class: 'cu' }));
+  // encabezado
+  const g = t.querySelector('thead tr.g'), al = t.querySelector('thead tr:not(.g)');
+  g.children[0].after(el('th', { class: 'cu cu-h', colspan: String(2 * maxCu) }, 'Custodio'));
+  const ths = [];
+  for (let i = 0; i < maxCu; i++) ths.push(el('th', { class: 'cu cu-h cu-nom' + (i === 0 ? ' gl' : '') }, 'Nombre'), el('th', { class: 'cu cu-h cu-mon' }, '$'));
+  al.prepend(...ths);
+  // filas
+  for (const tr of filas) {
+    if (tr.classList.contains('gap')) { const td = tr.firstElementChild; td.colSpan = (td.colSpan || 1) + 2 * maxCu; continue; }
+    const cel = [];
+    const l = tr.dataset.nm ? lista(tr) : [];
+    for (let i = 0; i < maxCu; i++) {
+      const par = l[i];
+      cel.push(el('td', { class: 'cu cu-nom' + (i === 0 ? ' gl' : '') }, par ? par[0] : ''), el('td', { class: 'cu cu-mon' }, par ? money(par[1]) : ''));
+    }
+    tr.firstElementChild.after(...cel);
+  }
+}
 const mmAbierto = new Set(); // grupos de money market desplegados (se mantienen al cambiar de cliente o de vista)
 function elegirCliente(k) {
   cliente = CLIENTES[k] ? k : null;
@@ -378,9 +437,18 @@ function construir(v, c) {
   v.appendChild(tarjeta('Resumen Cartera', tablaResumen(c, porAlias)));
   v.appendChild(tarjeta('Resumen por Clase de Activo', tablaClase(c, porAlias)));
   const prod = el('div');
-  prod.appendChild(tablaProductos(c, porAlias, true));
+  const bc = el('button', { type: 'button', class: 'mfo-btn opc-btn cu-btn' + (verCustodio ? ' is-on' : ''), 'aria-pressed': String(verCustodio) }, (verCustodio ? '− ' : '+ ') + 'Custodio');
+  bc.addEventListener('click', () => { verCustodio = !verCustodio; vistaCliente(); });
+  prod.appendChild(bc);
+  const tNac = tablaProductos(c, porAlias, true), tInt = tablaProductos(c, porAlias, false);
+  if (verCustodio) {
+    // pares Nombre/$: los que necesite el producto visible con más custodios, igual en ambas tablas
+    const pares = Math.max(paresCustodio(tNac, porAlias, 'clp'), paresCustodio(tInt, porAlias, 'usd'));
+    agregarCustodio(tNac, porAlias, 'clp', pares); agregarCustodio(tInt, porAlias, 'usd', pares);
+  }
+  prod.appendChild(tNac);
   prod.appendChild(el('div', { style: 'height:22px' }));
-  prod.appendChild(tablaProductos(c, porAlias, false));
+  prod.appendChild(tInt);
   prod.appendChild(el('p', { class: 'nota-pie' }, 'No se muestran instrumentos con valor menor a USD 20.'));
   v.appendChild(tarjeta('Detalle por Productos', prod));
   return c.alias.length;
@@ -420,14 +488,14 @@ function medirAnchos(v, n) {
   for (const t of tablas) {
     let amT = 0;
     for (const tr of t.querySelectorAll('tbody tr')) {
-      const cs = tr.children;
+      const cs = sinCu(tr);
       if (cs.length < 1 + 2 * n) continue;
       // la columna de nombres se mide con las tablas de resumen; en las de productos, un nombre más largo pasa a 2 líneas
-      if (t.querySelectorAll('col').length > 1 + 2 * n) lab = Math.max(lab, ancho(cs[0])); else labProd = Math.max(labProd, ancho(cs[0]) + (tr.classList.contains('mm-det') ? 12 : 0));
+      if (t.querySelectorAll('col:not(.cu):not(.esp)').length > 1 + 2 * n) lab = Math.max(lab, ancho(cs[0])); else labProd = Math.max(labProd, ancho(cs[0]) + (tr.classList.contains('mm-det') ? 12 : 0));
       for (let i = 1; i <= n; i++) amT = Math.max(amT, ancho(cs[i]));
       for (let i = n + 1; i <= 2 * n; i++) pc = Math.max(pc, ancho(cs[i]));
     }
-    const al = t.querySelectorAll('thead tr:not(.g) th');
+    const al = t.querySelectorAll('thead tr:not(.g) th:not(.cu)');
     al.forEach((th, i) => { if (i < n) amT = Math.max(amT, ancho(th)); else pc = Math.max(pc, ancho(th)); });
     am.push(amT);
   }
@@ -457,21 +525,34 @@ function aplicarAnchos(v, n, m) {
     const largo = true;
     t.classList.toggle('angosta', largo);
     const wAm = wAmG;
-    const cols = t.querySelectorAll('col');
+    const cols = t.querySelectorAll('col:not(.cu):not(.esp)');
+    const colEsp = t.querySelector('col.esp'); if (colEsp) colEsp.style.width = '128px';
     const ws = [wLab].concat(Array(n).fill(wAm), Array(n).fill(wPc), cols.length > 1 + 2 * n ? [wLim] : []);
     ws.forEach((w, i) => { if (cols[i]) cols[i].style.width = w + 'px'; });
-    const tot = ws.reduce((x, y) => x + y, 0);
+    // columnas de custodio (si están desplegadas): nombre y monto, al ancho de su contenido
+    let wCu = 0;
+    const colsCu = [...t.querySelectorAll('col.cu')];
+    if (colsCu.length) {
+      const anc = (sel) => Math.max(0, ...[...v.querySelectorAll(sel)].map((x) => { const r = document.createRange(); r.selectNodeContents(x); return r.getBoundingClientRect().width; })); // mismo ancho en ambas tablas
+      const wNom = Math.ceil(Math.max(anc('td.cu-nom') + 10, anc('th.cu-nom') + 6)), wMon = Math.ceil(Math.max(anc('td.cu-mon'), anc('th.cu-mon')) + 8);
+      colsCu.forEach((col, i) => { col.style.width = (i % 2 ? wMon : wNom) + 'px'; wCu += i % 2 ? wMon : wNom; });
+    }
+    const tot = ws.reduce((x, y) => x + y, 0) + wCu + (colEsp ? 128 + 4 : 0);
     t.style.width = tot + 'px'; t.style.minWidth = tot + 'px';
-    t.style.zoom = escala < 1 ? escala.toFixed(3) : '';
+    t.dataset.tot = tot;
     // separación leve en blanco entre nombres | montos | % | límite/allocation
     const conLim = cols.length > 1 + 2 * n;
     t.querySelectorAll('tbody tr').forEach((tr) => {
-      const cs = tr.children; if (cs.length < 1 + 2 * n) return;
+      const cs = sinCu(tr); if (cs.length < 1 + 2 * n) return;
       cs[1].classList.add('gl'); cs[n + 1].classList.add('gl'); if (conLim && cs[2 * n + 1]) cs[2 * n + 1].classList.add('gl');
     });
     const g = t.querySelector('thead tr.g'); if (g) [...g.children].slice(1).forEach((th) => th.classList.add('gl'));
-    const al = t.querySelectorAll('thead tr:not(.g) th'); if (al[0]) al[0].classList.add('gl'); if (al[n]) al[n].classList.add('gl');
+    const al = t.querySelectorAll('thead tr:not(.g) th:not(.cu)'); if (al[0]) al[0].classList.add('gl'); if (al[n]) al[n].classList.add('gl');
   });
+  // si alguna tabla (p. ej. con custodios desplegados y 4 alias) no cabe en la tarjeta, todas se achican en la misma proporción
+  const anchoMax = Math.max(...tablas.map((t) => (+t.dataset.tot || 0) + 14));
+  const esc = Math.min(escala, disponible / anchoMax);
+  tablas.forEach((t) => { t.style.zoom = esc < 1 ? esc.toFixed(3) : ''; });
 }
 function tarjeta(titulo, contenido) {
   const it = el('div', { class: 'item' });
@@ -697,12 +778,26 @@ function tablaProductos(c, porAlias, nacional) {
         ut.forEach((x, i) => filaMM.appendChild(el('td', {}, Math.round(mt[i]) ? pct(totUsd[i] ? x / totUsd[i] : 0) : '')));
         tb.appendChild(filaMM);
       }
-      const tr = el('tr');
-      if (agrupar && esMM(nm)) { tr.className = 'mm-det'; tr.dataset.mm = cl; tr.hidden = !mmAbierto.has(claveMM); }
-      tr.appendChild(el('td', { class: 'lab', title: nm }, nm.replace(/\(UNICA\)/g, '(Unica)'))); // serie única en minúsculas para que el nombre quepa
-      m.forEach((x) => tr.appendChild(el('td', {}, money(x))));
-      u.forEach((x, i) => tr.appendChild(el('td', {}, Math.round(m[i]) ? pct(totUsd[i] ? x / totUsd[i] : 0) : '')));
-      tb.appendChild(tr);
+      // con el bloque Custodio desplegado, un producto en más de un custodio se divide en una fila por custodio,
+      // cada una con los montos y % de cada alias en ese custodio (custodios con al menos USD 20)
+      let partes = [null];
+      if (verCustodio) {
+        const porCu = new Map();
+        porAlias.forEach((rs) => rs.filter((r) => r.clase === cl && r.instrumento === nm).forEach((r) => { const k = custodioCorto(r.custodio); porCu.set(k, (porCu.get(k) || 0) + r.usd); }));
+        const cus = [...porCu.entries()].filter(([, x]) => Math.abs(x) >= 20).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+        if (cus.length > 1) partes = cus;
+      }
+      for (const cu of partes) {
+        const filtro = (r) => r.clase === cl && r.instrumento === nm && (cu === null || custodioCorto(r.custodio) === cu);
+        const mc = cu === null ? m : porAlias.map((rs) => rs.filter(filtro).reduce((s2, r) => s2 + r[campo], 0));
+        const uc = cu === null ? u : porAlias.map((rs) => rs.filter(filtro).reduce((s2, r) => s2 + r.usd, 0));
+        const tr = el('tr'); tr.dataset.nm = nm; tr.dataset.cl = cl; if (cu !== null) tr.dataset.cu = cu;
+        if (agrupar && esMM(nm)) { tr.className = 'mm-det'; tr.dataset.mm = cl; tr.hidden = !mmAbierto.has(claveMM); }
+        tr.appendChild(el('td', { class: 'lab', title: nm }, nm.replace(/\(UNICA\)/g, '(Unica)'))); // serie única en minúsculas para que el nombre quepa
+        mc.forEach((x) => tr.appendChild(el('td', {}, money(x))));
+        uc.forEach((x, i) => tr.appendChild(el('td', {}, Math.round(mc[i]) ? pct(totUsd[i] ? x / totUsd[i] : 0) : '')));
+        tb.appendChild(tr);
+      }
     }
     // subtotal de la clase (monto en su moneda y % sobre la cartera total del alias)
     filaTotal(TOTALES[cl], porAlias.map((rs) => rs.filter((r) => r.clase === cl)), 'sub');
@@ -780,16 +875,16 @@ function pdfLamina(doc, titulo, subtitulo, fuente, nota, num) {
 
 // Lee una tabla del dashboard (encabezados y filas visibles con sus clases)
 function leerTabla(t) {
-  const n = t.querySelectorAll('thead tr:not(.g) th').length / 2;
-  const conLim = t.querySelectorAll('col').length > 1 + 2 * n;
-  const anchos = [...t.querySelectorAll('col')].map((c) => parseFloat(c.style.width) || 60);
-  const g = [...t.querySelectorAll('thead tr.g th')];
-  const al = [...t.querySelectorAll('thead tr:not(.g) th')];
+  const n = t.querySelectorAll('thead tr:not(.g) th:not(.cu)').length / 2;
+  const conLim = t.querySelectorAll('col:not(.cu):not(.esp)').length > 1 + 2 * n;
+  const anchos = [...t.querySelectorAll('col:not(.cu):not(.esp)')].map((c) => parseFloat(c.style.width) || 60);
+  const g = [...t.querySelectorAll('thead tr.g th:not(.cu)')];
+  const al = [...t.querySelectorAll('thead tr:not(.g) th:not(.cu)')];
   const filas = [];
   for (const tr of t.querySelectorAll('tbody tr')) {
     if (tr.hidden) continue;
     if (tr.classList.contains('gap')) { filas.push({ gap: true }); continue; }
-    const cs = [...tr.children];
+    const cs = sinCu(tr);
     filas.push({
       sub: tr.classList.contains('sub'), big: tr.classList.contains('big'), sep: tr.classList.contains('sep'), det: tr.classList.contains('mm-det'),
       celdas: cs.map((td) => ({ txt: td.textContent.trim(), lim: td.classList.contains('lim'), alloc: td.classList.contains('alloc'), vacio: td.classList.contains('vacio') })),
@@ -888,7 +983,18 @@ async function generarPDF() {
     const fechaLarga = f ? `${f.getDate()} ${MESES[f.getMonth()]} ${f.getFullYear()}` : '';
     const fuente = 'Fuente: MFO, Asset Allocation.';
     pdfPortada(doc, 'Control Carteras Espejo', nombre, fechaLarga);
-    const tablas = [...$('vista').querySelectorAll('table.r')].map(leerTabla);
+    // el PDF va siempre sin custodios: si están desplegados, se arman las tablas sin ellos fuera de pantalla
+    let tablas;
+    if (verCustodio) {
+      verCustodio = false;
+      const tmp = el('div', { style: 'position:absolute;left:-20000px;top:0;visibility:hidden;width:1400px' }); document.body.appendChild(tmp);
+      try {
+        const c0 = CLIENTES[cliente];
+        const cc = { ...c0, alias: c0.alias.filter((a) => verOpcional || !(c0.opcional || []).includes(a)) };
+        const nn = construir(tmp, cc); aplicarAnchos(tmp, nn, anchosGlobales());
+        tablas = [...tmp.querySelectorAll('table.r')].map(leerTabla);
+      } finally { tmp.remove(); verCustodio = true; }
+    } else tablas = [...$('vista').querySelectorAll('table.r')].map(leerTabla);
     const laminas = [
       ['Resumen Cartera', '', tablas[0], null],
       ['Resumen por Clase de Activo', '', tablas[1], null],
