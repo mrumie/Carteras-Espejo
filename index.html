@@ -710,6 +710,17 @@ function tablaProductos(c, porAlias, nacional) {
   // total de la cartera nacional / internacional
   gap();
   filaTotal(nacional ? 'Total Cartera Nacional (CLP)' : 'Total Cartera Internacional (USD)', porAlias.map((rs) => rs.filter((r) => clases.includes(r.clase))), 'big');
+  if (!nacional) {
+    // al final de Cartera Internacional, los totales de toda la cartera (como en Resumen por Clase de Activo)
+    gap();
+    for (const [etq, cpo] of [['Total Cartera (en USD)', 'usd'], ['Total Cartera (en CLP)', 'clp']]) {
+      const tr = el('tr', { class: 'big' });
+      tr.appendChild(el('td', { class: 'lab' }, etq));
+      porAlias.forEach((rs) => tr.appendChild(el('td', {}, money(rs.reduce((s2, r) => s2 + r[cpo], 0)))));
+      porAlias.forEach(() => tr.appendChild(el('td')));
+      tb.appendChild(tr);
+    }
+  }
   t.appendChild(tb);
   return t;
   function filaTotal(etq, rsAlias, cls) {
